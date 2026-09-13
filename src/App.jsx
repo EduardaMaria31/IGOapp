@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Login from './pages/Login';
 import Cadastro from './pages/Cadastro';
 import EsqueciSenha from './pages/EsqueciSenha';
+import RedefinirSenha from './pages/RedefinirSenha';
 import Dashboard from './pages/Dashboard';
 import RotaPrivada from './components/RotaPrivada';
 
@@ -13,15 +14,16 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/cadastro" element={<Cadastro />} />
         <Route path="/esqueci-senha" element={<EsqueciSenha />} />
+        <Route path="/redefinir-senha" element={<RedefinirSenha />} />
 
         {/* Rota Protegida */}
-        <Route 
-          path="/dashboard" 
+        <Route
+          path="/dashboard"
           element={
             <RotaPrivada>
               <Dashboard />
             </RotaPrivada>
-          } 
+          }
         />
 
         {/* Redirecionamento padrão para /login */}
@@ -30,4 +32,3 @@ export default function App() {
     </Router>
   );
 }
-
