@@ -59,7 +59,7 @@ export default function RedefinirSenha() {
         <section style={styles.left}>
           <h1 style={styles.title}>Redefinir Senha</h1>
           <p style={styles.subtitle}>
-            Crie uma nova senha segura para acessar sua conta na plataforma iGO.
+            Crie uma nova senha segura para acessar sua conta na plataforma IGO.
           </p>
         </section>
 
