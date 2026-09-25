@@ -34,7 +34,7 @@ export default function Login() {
       return;
     }
 
-    navigate('/dashboard');
+    navigate('/operacao');
   }
 
   return (

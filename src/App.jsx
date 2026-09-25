@@ -1,32 +1,40 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { supabase } from './lib/supabaseClient';
 import Login from './pages/Login';
 import Cadastro from './pages/Cadastro';
 import EsqueciSenha from './pages/EsqueciSenha';
 import RedefinirSenha from './pages/RedefinirSenha';
 import Dashboard from './pages/Dashboard';
-import RotaPrivada from './components/RotaPrivada';
+import Operacao from './pages/Operacao';
+
+// Protege rotas que exigem login (definida aqui mesmo, sem depender de outro arquivo).
+function RotaPrivada({ children }) {
+  const [sessao, setSessao] = useState(undefined);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSessao(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSessao(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+  if (sessao === undefined) return null; // ainda verificando
+  return sessao ? children : <Navigate to="/login" replace />;
+}
 
 export default function App() {
   return (
     <Router>
       <Routes>
-        {/* Rotas Públicas */}
+        {/* Públicas */}
         <Route path="/login" element={<Login />} />
         <Route path="/cadastro" element={<Cadastro />} />
         <Route path="/esqueci-senha" element={<EsqueciSenha />} />
         <Route path="/redefinir-senha" element={<RedefinirSenha />} />
 
-        {/* Rota Protegida */}
-        <Route
-          path="/dashboard"
-          element={
-            <RotaPrivada>
-              <Dashboard />
-            </RotaPrivada>
-          }
-        />
+        {/* Protegida (a IA está dentro do Dashboard) */}
+        <Route path="/dashboard" element={<RotaPrivada><Dashboard /></RotaPrivada>} />
+        <Route path="/operacao" element={<RotaPrivada><Operacao /></RotaPrivada>} />
 
-        {/* Redirecionamento padrão para /login */}
+        {/* Qualquer outra rota vai para o login */}
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </Router>

@@ -109,3 +109,44 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* ===== Dropdowns (select/option) no tema iGO =====
+   Corrige o menu branco padrão do navegador: fundo azul-marinho,
+   texto branco e o item selecionado em laranja iGO. */
+select {
+  color: #ffffff;
+}
+select option,
+select optgroup {
+  background-color: #071a5c;
+  color: #ffffff;
+}
+select option:checked {
+  background-color: #f96000;
+  color: #ffffff;
+}
+
+/* ===== Transição de telas: fade-in ao abrir/trocar de tela ===== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Fundo estável entre telas: cor navy por baixo evita qualquer "flash"
+   escuro no instante da troca de rota, antes da imagem de fundo pintar. */
+body, #root {
+  background-color: #00167a;
+}
+/* Só o CONTEÚDO desbota ao trocar de aba (barra de topo + área principal).
+   O fundo (styles.page / bgOverlay) NÃO é animado, então permanece fixo:
+   as informações "piscam", o fundo continua parado. */
+#root > div > nav,
+#root > div > header,
+#root > div > main {
+  animation: fadeIn 0.25s ease;
+}
+
+/* Cartões/modais que aparecem por cima (ex.: detalhes do veículo) */
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
