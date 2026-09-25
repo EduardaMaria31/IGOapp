@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
+import MenuLateral from '../components/MenuLateral';
 import igoLogo from '../assets/logo-igo-10.png';
 import bgEstacionamento from '../assets/estacionamento-bg.jpeg';
 
@@ -9,7 +10,7 @@ const NAVY_DARK = '#000d47';
 const ORANGE = '#f96000';
 const LIME = '#a3e635';
 
-// Mostra o tipo do veículo com um ícone
+// Mostra o tipo do veículo
 function tipoLabel(tv) {
   if (tv === 'moto') return 'Moto';
   if (tv === 'carro') return 'Carro';
@@ -34,20 +35,31 @@ function Info({ label, valor }) {
   );
 }
 
+// Lê o timestamp do banco (UTC sem fuso) como Date real
+function paraData(ts) {
+  if (!ts) return null;
+  let iso = String(ts).trim().replace(' ', 'T');
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
+  return new Date(iso);
+}
+
 export default function Operacao() {
   const navigate = useNavigate();
 
   const [vagas, setVagas] = useState([]);
   const [ativas, setAtivas] = useState([]);
+  const [precos, setPrecos] = useState({}); // chave: `${patio_id}|${tipo}`
   const [placa, setPlaca] = useState('');
   const [modelo, setModelo] = useState('');
   const [tipo, setTipo] = useState('carro'); // carro ou moto
   const [donoNome, setDonoNome] = useState('');
   const [donoTel, setDonoTel] = useState('');
   const [vagaId, setVagaId] = useState('');
+  const [placaConhecida, setPlacaConhecida] = useState(false); // veículo já no banco
   const [msg, setMsg] = useState('');
   const [msgTipo, setMsgTipo] = useState('ok'); // 'ok' ou 'erro'
   const [detalhe, setDetalhe] = useState(null); // veículo aberto no cartão de detalhes
+  const [saida, setSaida] = useState(null); // fluxo de pagamento: { t, etapa, valor, valorFinal }
 
   useEffect(() => { carregar(); }, []);
 
@@ -60,15 +72,43 @@ export default function Operacao() {
 
     const { data: at } = await supabase
       .from('transacao')
-      .select('id, hora_entrada, veiculo:veiculo_id ( placa, modelo, tipo_veiculo, proprietario_nome, proprietario_telefone ), vaga:vaga_id ( numero )')
+      .select('id, hora_entrada, veiculo:veiculo_id ( placa, modelo, tipo_veiculo, proprietario_nome, proprietario_telefone ), vaga:vaga_id ( numero, patio_id )')
       .is('hora_saida', null)
       .order('hora_entrada', { ascending: false });
     setAtivas(at ?? []);
+
+    // Tabela de preços (para estimar o valor antes de confirmar a saída)
+    const { data: tp } = await supabase
+      .from('tabela_preco')
+      .select('patio_id, tipo_veiculo, valor_hora, valor_fracao, tolerancia_minutos');
+    const mapa = {};
+    (tp ?? []).forEach((p) => { mapa[`${p.patio_id}|${p.tipo_veiculo}`] = p; });
+    setPrecos(mapa);
   }
 
   function aviso(texto, tipo = 'ok') {
     setMsg(texto);
     setMsgTipo(tipo);
+  }
+
+  // Autopreenche modelo/tipo/proprietário quando a placa já existe no banco
+  async function buscarVeiculo() {
+    const p = placa.trim().toUpperCase();
+    if (!p) { setPlacaConhecida(false); return; }
+    const { data } = await supabase
+      .from('veiculo')
+      .select('modelo, tipo_veiculo, proprietario_nome, proprietario_telefone')
+      .eq('placa', p)
+      .maybeSingle();
+    if (data) {
+      setModelo(data.modelo || '');
+      if (data.tipo_veiculo) setTipo(data.tipo_veiculo);
+      setDonoNome(data.proprietario_nome || '');
+      setDonoTel(data.proprietario_telefone || '');
+      setPlacaConhecida(true);
+    } else {
+      setPlacaConhecida(false);
+    }
   }
 
   // Retorna a linha em 'usuario' do usuário logado (para usar como operador)
@@ -113,7 +153,7 @@ export default function Operacao() {
       });
       if (error) throw error;
 
-      setPlaca(''); setModelo(''); setDonoNome(''); setDonoTel(''); setVagaId('');
+      setPlaca(''); setModelo(''); setDonoNome(''); setDonoTel(''); setVagaId(''); setPlacaConhecida(false);
       aviso(`Entrada registrada para a placa ${p}!`, 'ok');
       carregar();
     } catch (err) {
@@ -121,29 +161,58 @@ export default function Operacao() {
     }
   }
 
-  async function registrarSaida(transacaoId) {
+  // Estima o valor a cobrar (mesma regra do banco: tolerância, hora cheia + fração)
+  function estimarValor(t) {
+    const pr = precos[`${t.vaga?.patio_id}|${t.veiculo?.tipo_veiculo}`];
+    const entrada = paraData(t.hora_entrada);
+    if (!pr || !entrada) return null;
+    const dur = (Date.now() - entrada.getTime()) / 60000; // minutos
+    if (dur <= pr.tolerancia_minutos) return 0;
+    const horas = Math.floor(dur / 60);
+    const resto = dur - horas * 60;
+    return horas * Number(pr.valor_hora) + (resto > 0 ? Number(pr.valor_fracao) : 0);
+  }
+
+  // Passo 1 do fluxo de saída: mostra a tela de pagamento simulado
+  function iniciarSaida(t) {
     setMsg('');
-    const { data, error } = await supabase.rpc('registrar_saida', { p_transacao_id: transacaoId });
-    if (error) { aviso('Erro: ' + error.message, 'erro'); return; }
-    const valor = Number(data?.valor_calculado ?? 0);
-    aviso(`Saída registrada. Valor cobrado: R$ ${valor.toFixed(2)}`, 'ok');
+    const valor = estimarValor(t);
+    setSaida({ t, etapa: 'pagamento', valor });
+  }
+
+  // Passo 2: pagamento confirmado -> chama o banco (libera a vaga) -> Acesso Liberado
+  async function confirmarPagamento() {
+    const t = saida?.t;
+    if (!t) return;
+    const { data, error } = await supabase.rpc('registrar_saida', { p_transacao_id: t.id });
+    if (error) { aviso('Erro ao registrar saída: ' + error.message, 'erro'); setSaida(null); return; }
+    const valorFinal = Number(data?.valor_calculado ?? saida.valor ?? 0);
+    setSaida({ t, etapa: 'liberado', valor: saida.valor, valorFinal });
     carregar();
   }
 
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/login');
+  // Simula uma falha de pagamento: NÃO libera a cancela, o carro continua no pátio
+  function negarPagamento() {
+    setSaida((atual) => (atual ? { ...atual, etapa: 'negado' } : atual));
   }
+
+  function fecharSaida() { setSaida(null); }
 
   const livres = vagas.filter((v) => v.status === 'livre');
 
   function horaBR(ts) {
-    if (!ts) return '—';
-    // O banco guarda o horário em UTC (timestamp sem fuso). Lemos como UTC e
-    // exibimos no fuso de Brasília.
-    let iso = String(ts).trim().replace(' ', 'T');
-    if (!/[zZ]|[+-]\d\d:?\d\d$/.test(iso)) iso += 'Z';
-    return new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const d = paraData(ts);
+    return d ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—';
+  }
+  function brl(v) {
+    if (v == null) return '—';
+    return 'R$ ' + Number(v).toFixed(2).replace('.', ',');
+  }
+  function tempoNoPatio(ts) {
+    const d = paraData(ts);
+    if (!d) return '—';
+    const min = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+    return `${Math.floor(min / 60)}h ${min % 60}m`;
   }
 
   return (
@@ -153,10 +222,7 @@ export default function Operacao() {
       <header style={s.nav}>
         <div style={s.navInner}>
           <img src={igoLogo} alt="iGO" style={s.navLogo} />
-          <div style={s.navRight}>
-            <button onClick={() => navigate('/dashboard')} style={s.ghostBtn}>← Painel</button>
-            <button onClick={handleLogout} style={s.logoutBtn}>Sair</button>
-          </div>
+          <MenuLateral atual="operacao" />
         </div>
       </header>
 
@@ -179,7 +245,8 @@ export default function Operacao() {
               <label style={s.field}>
                 <span style={s.fieldLabel}>Placa *</span>
                 <input style={s.input} placeholder="Ex.: ABC1D23" value={placa} required
-                  onChange={(e) => setPlaca(e.target.value)} />
+                  onChange={(e) => { setPlaca(e.target.value); setPlacaConhecida(false); }}
+                  onBlur={buscarVeiculo} />
               </label>
               <label style={s.field}>
                 <span style={s.fieldLabel}>Modelo *</span>
@@ -211,6 +278,7 @@ export default function Operacao() {
                 </select>
               </label>
               <button type="submit" style={s.button}>Registrar entrada</button>
+              {placaConhecida && <span style={s.reconhecido}>Veículo reconhecido — dados preenchidos automaticamente.</span>}
             </form>
             {livres.length === 0 && <p style={s.hint}>Nenhuma vaga livre no momento.</p>}
           </div>
@@ -243,7 +311,7 @@ export default function Operacao() {
                       <td style={s.td}>{horaBR(t.hora_entrada)}</td>
                       <td style={s.td}>
                         <button style={s.olhoBtn} title="Ver detalhes" onClick={() => setDetalhe(t)}><IconeOlho /></button>
-                        <button style={s.saidaBtn} onClick={() => registrarSaida(t.id)}>Registrar saída</button>
+                        <button style={s.saidaBtn} onClick={() => iniciarSaida(t)}>Registrar saída</button>
                       </td>
                     </tr>
                   ))}
@@ -278,6 +346,7 @@ export default function Operacao() {
         </div>
       </main>
 
+      {/* Detalhes do veículo */}
       {detalhe && (
         <div style={s.modalOverlay} onClick={() => setDetalhe(null)}>
           <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -296,6 +365,66 @@ export default function Operacao() {
         </div>
       )}
 
+      {/* Fluxo de saída: pagamento simulado -> acesso liberado/negado */}
+      {saida && (
+        <div style={s.modalOverlay} onClick={fecharSaida}>
+          <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
+
+            {saida.etapa === 'pagamento' && (
+              <>
+                <div style={s.modalHeader}>
+                  <h3 style={s.modalTitle}>Pagamento da saída</h3>
+                  <button style={s.modalClose} onClick={fecharSaida}>✕</button>
+                </div>
+                <Info label="Placa" valor={saida.t.veiculo?.placa} />
+                <Info label="Vaga" valor={saida.t.vaga?.numero} />
+                <Info label="Entrada" valor={horaBR(saida.t.hora_entrada)} />
+                <Info label="Permanência" valor={tempoNoPatio(saida.t.hora_entrada)} />
+                <div style={s.valorBox}>
+                  <span style={s.valorLabel}>Valor a pagar</span>
+                  <span style={s.valorGrande}>{saida.valor == null ? 'A calcular' : brl(saida.valor)}</span>
+                  <span style={s.valorObs}>Pagamento simulado — nenhuma cobrança real é feita.</span>
+                </div>
+                <div style={s.botoesLinha}>
+                  <button style={s.btnConfirmar} onClick={confirmarPagamento}>Confirmar pagamento</button>
+                  <button style={s.btnNegar} onClick={negarPagamento}>Simular falha</button>
+                </div>
+              </>
+            )}
+
+            {saida.etapa === 'liberado' && (
+              <div style={s.resultadoBox}>
+                <div style={{ ...s.resultadoIcone, background: 'rgba(163,230,53,0.15)', border: '2px solid rgba(163,230,53,0.5)', color: LIME }}>
+                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                </div>
+                <h3 style={{ ...s.resultadoTitulo, color: LIME }}>Acesso Liberado</h3>
+                <p style={s.resultadoTexto}>Pagamento confirmado. Cancela liberada para a placa <strong>{saida.t.veiculo?.placa}</strong>.</p>
+                <div style={s.valorBox}>
+                  <span style={s.valorLabel}>Valor cobrado</span>
+                  <span style={s.valorGrande}>{brl(saida.valorFinal)}</span>
+                </div>
+                <button style={s.btnConfirmar} onClick={fecharSaida}>Concluir</button>
+              </div>
+            )}
+
+            {saida.etapa === 'negado' && (
+              <div style={s.resultadoBox}>
+                <div style={{ ...s.resultadoIcone, background: 'rgba(255,80,80,0.15)', border: '2px solid rgba(255,80,80,0.5)', color: '#ffb4a2' }}>
+                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </div>
+                <h3 style={{ ...s.resultadoTitulo, color: '#ffb4a2' }}>Acesso Negado</h3>
+                <p style={s.resultadoTexto}>O pagamento não foi confirmado. A cancela permanece fechada e o veículo continua no pátio.</p>
+                <div style={s.botoesLinha}>
+                  <button style={s.btnConfirmar} onClick={() => setSaida((a) => ({ ...a, etapa: 'pagamento' }))}>Tentar novamente</button>
+                  <button style={s.btnNegar} onClick={fecharSaida}>Fechar</button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
       <style>{`*,*::before,*::after{box-sizing:border-box}html,body,#root{margin:0;width:100vw;min-height:100vh}`}</style>
     </div>
   );
@@ -307,9 +436,6 @@ const s = {
   nav: { position: 'relative', zIndex: 2, padding: '20px 48px', borderBottom: '1px solid rgba(255,255,255,0.1)', backgroundColor: 'rgba(0,13,71,0.4)', backdropFilter: 'blur(10px)' },
   navInner: { width: '100%', maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   navLogo: { height: 60, objectFit: 'contain', mixBlendMode: 'screen' },
-  navRight: { display: 'flex', alignItems: 'center', gap: 12 },
-  ghostBtn: { padding: '8px 16px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
-  logoutBtn: { padding: '8px 16px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.3)', backgroundColor: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   content: { position: 'relative', zIndex: 1, maxWidth: 1200, width: '90%', margin: '0 auto', padding: '32px 0 60px', display: 'flex', flexDirection: 'column', gap: 20 },
   title: { fontSize: 32, fontWeight: 800, margin: '0 0 6px', color: '#fff' },
   subtitle: { fontSize: 15, color: 'rgba(255,255,255,0.75)', margin: 0 },
@@ -319,10 +445,11 @@ const s = {
   cardWrapper: { position: 'relative', width: '100%' },
   card: { padding: 24, borderRadius: 4, background: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(14px)', border: '1px solid rgba(255,255,255,0.18)', boxShadow: '0 10px 25px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: 14 },
   sectionTitle: { fontSize: 18, fontWeight: 700, color: '#fff', margin: 0 },
-  formRow: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' },
+  formRow: { position: 'relative', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' },
   field: { display: 'flex', flexDirection: 'column', gap: 4 },
   fieldLabel: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase' },
   input: { padding: '10px 12px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none', colorScheme: 'dark' },
+  reconhecido: { position: 'absolute', left: '50%', bottom: 4, transform: 'translateX(-50%)', margin: 0, fontSize: 13, fontWeight: 600, color: LIME, whiteSpace: 'nowrap', pointerEvents: 'none', animation: 'reconhecidoIn 0.35s ease' },
   button: { padding: '10px 18px', borderRadius: 4, border: 'none', backgroundColor: ORANGE, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
   saidaBtn: { padding: '6px 12px', borderRadius: 4, border: 'none', backgroundColor: ORANGE, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
   olhoBtn: { background: 'transparent', border: 'none', cursor: 'pointer', marginRight: 8, padding: 4, color: 'rgba(255,255,255,0.85)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', verticalAlign: 'middle' },
@@ -334,6 +461,17 @@ const s = {
   infoRow: { display: 'flex', justifyContent: 'space-between', gap: 16, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.1)' },
   infoLabel: { fontSize: 13, color: 'rgba(255,255,255,0.6)', fontWeight: 600 },
   infoValue: { fontSize: 14, color: '#fff', textAlign: 'right' },
+  valorBox: { marginTop: 14, padding: 16, borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 },
+  valorLabel: { fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase' },
+  valorGrande: { fontSize: 32, fontWeight: 800, color: '#fff' },
+  valorObs: { fontSize: 11, color: 'rgba(255,255,255,0.5)' },
+  botoesLinha: { display: 'flex', gap: 10, marginTop: 16 },
+  btnConfirmar: { flex: 1, padding: '12px 16px', borderRadius: 6, border: 'none', backgroundColor: ORANGE, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
+  btnNegar: { flex: 1, padding: '12px 16px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  resultadoBox: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 10, paddingTop: 8 },
+  resultadoIcone: { width: 64, height: 64, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  resultadoTitulo: { margin: 0, fontSize: 22, fontWeight: 800 },
+  resultadoTexto: { margin: 0, fontSize: 14, color: 'rgba(255,255,255,0.8)', lineHeight: 1.5 },
   hint: { fontSize: 13, color: 'rgba(255,255,255,0.6)', margin: 0 },
   tableResponsive: { overflowX: 'auto' },
   table: { width: '100%', borderCollapse: 'collapse', textAlign: 'left' },

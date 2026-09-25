@@ -7,6 +7,9 @@ import EsqueciSenha from './pages/EsqueciSenha';
 import RedefinirSenha from './pages/RedefinirSenha';
 import Dashboard from './pages/Dashboard';
 import Operacao from './pages/Operacao';
+import ConsultaVagas from './pages/ConsultaVagas';
+import ConsultaPrecos from './pages/ConsultaPrecos';
+import Usuarios from './pages/Usuarios';
 
 // Protege rotas que exigem login (definida aqui mesmo, sem depender de outro arquivo).
 function RotaPrivada({ children }) {
@@ -30,9 +33,12 @@ export default function App() {
         <Route path="/esqueci-senha" element={<EsqueciSenha />} />
         <Route path="/redefinir-senha" element={<RedefinirSenha />} />
 
-        {/* Protegida (a IA está dentro do Dashboard) */}
+        {/* Protegidas */}
         <Route path="/dashboard" element={<RotaPrivada><Dashboard /></RotaPrivada>} />
         <Route path="/operacao" element={<RotaPrivada><Operacao /></RotaPrivada>} />
+        <Route path="/consulta-vagas" element={<RotaPrivada><ConsultaVagas /></RotaPrivada>} />
+        <Route path="/consulta-precos" element={<RotaPrivada><ConsultaPrecos /></RotaPrivada>} />
+        <Route path="/usuarios" element={<RotaPrivada><Usuarios /></RotaPrivada>} />
 
         {/* Qualquer outra rota vai para o login */}
         <Route path="*" element={<Navigate to="/login" replace />} />

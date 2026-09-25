@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
+import MenuLateral from '../components/MenuLateral';
 import igoLogo from '../assets/logo-igo-10.png';
 import bgEstacionamento from '../assets/estacionamento-bg.jpeg';
 
@@ -115,8 +116,9 @@ export default function Dashboard() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const role = user.user_metadata?.role || 'operador';
-        setUserRole(role);
+        const { data: eu } = await supabase
+          .from('usuario').select('perfil').eq('auth_user_id', user.id).maybeSingle();
+        setUserRole(eu?.perfil || 'operador');
       }
 
       // Painel de insights (IA) — alimenta também os cards de resumo e a ocupação por pátio
@@ -223,15 +225,7 @@ export default function Dashboard() {
         <div style={styles.navInner}>
           <img src={igoLogo} alt="iGO" style={styles.navLogo} />
           <div style={styles.navRight}>
-            <span style={styles.userInfo}>
-              Perfil: <strong>{userRole.toUpperCase()}</strong>
-            </span>
-            <button onClick={() => navigate('/operacao')} style={styles.logoutBtn}>
-              Operação
-            </button>
-            <button onClick={handleLogout} style={styles.logoutBtn}>
-              Sair
-            </button>
+            <MenuLateral atual="painel" />
           </div>
         </div>
       </header>
@@ -244,20 +238,6 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Atalhos do Administrador (Apenas Admin vê) */}
-        {userRole === 'admin' && (
-          <section style={styles.adminSection}>
-            <div style={styles.cardWrapper}>
-              <span style={styles.bracketTopRight} />
-              <div style={styles.adminBar}>
-                <span style={styles.adminBarTitle}>Atalhos de Gestão:</span>
-                <button onClick={() => navigate('/gestao-patios')} style={styles.adminBtn}>Gestão de Pátios</button>
-                <button onClick={() => navigate('/gestao-precos')} style={styles.adminBtn}>Gestão de Preços</button>
-                <button onClick={() => navigate('/gestao-usuarios')} style={styles.adminBtn}>Usuários</button>
-              </div>
-            </div>
-          </section>
-        )}
 
         {/* 1. CARDS DE RESUMO NO TOPO */}
         <section style={styles.cardsGrid}>
