@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabaseClient';
 import MenuLateral from '../components/MenuLateral';
@@ -60,6 +60,8 @@ export default function Operacao() {
   const [msgTipo, setMsgTipo] = useState('ok'); // 'ok' ou 'erro'
   const [detalhe, setDetalhe] = useState(null); // veículo aberto no cartão de detalhes
   const [saida, setSaida] = useState(null); // fluxo de pagamento: { t, etapa, valor, valorFinal }
+  const [lendoPlaca, setLendoPlaca] = useState(false); // leitura de placa por foto (IA)
+  const fotoRef = useRef(null);
 
   useEffect(() => { carregar(); }, []);
 
@@ -108,6 +110,66 @@ export default function Operacao() {
       setPlacaConhecida(true);
     } else {
       setPlacaConhecida(false);
+    }
+  }
+
+  // Preenche os dados a partir de uma placa já conhecida (usado após ler por foto)
+  async function autopreencherPorPlaca(p) {
+    const { data } = await supabase
+      .from('veiculo')
+      .select('modelo, tipo_veiculo, proprietario_nome, proprietario_telefone')
+      .eq('placa', p)
+      .maybeSingle();
+    if (data) {
+      setModelo(data.modelo || '');
+      if (data.tipo_veiculo) setTipo(data.tipo_veiculo);
+      setDonoNome(data.proprietario_nome || '');
+      setDonoTel(data.proprietario_telefone || '');
+      setPlacaConhecida(true);
+    } else {
+      setPlacaConhecida(false);
+    }
+  }
+
+  // "Ler placa por foto" (IA): envia a imagem para a Edge Function, que chama o Gemini
+  async function aoSelecionarFoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite selecionar a mesma foto de novo
+    if (!file) return;
+    setMsg('');
+    setLendoPlaca(true);
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const base64 = String(dataUrl).split(',')[1];
+      const { data, error } = await supabase.functions.invoke('ler-placa', {
+        body: { imagem: base64, mime: file.type || 'image/jpeg' },
+      });
+      if (error) {
+        // Tenta extrair a mensagem real retornada pela função
+        let detalhe = error.message || 'erro desconhecido';
+        try {
+          if (error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body?.error) detalhe = body.error;
+          }
+        } catch (_) { /* ignora */ }
+        throw new Error(detalhe);
+      }
+      if (data?.error) throw new Error(data.error);
+      const p = (data?.placa || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!p) { aviso('Não consegui ler a placa na foto. Tente outra imagem ou digite manualmente.', 'erro'); return; }
+      setPlaca(p);
+      await autopreencherPorPlaca(p);
+      aviso(`Placa lida por foto: ${p}`, 'ok');
+    } catch (err) {
+      aviso('Erro ao ler a placa: ' + (err?.message || err), 'erro');
+    } finally {
+      setLendoPlaca(false);
     }
   }
 
@@ -248,6 +310,13 @@ export default function Operacao() {
                   onChange={(e) => { setPlaca(e.target.value); setPlacaConhecida(false); }}
                   onBlur={buscarVeiculo} />
               </label>
+              <div style={s.field}>
+                <span style={s.fieldLabel}>&nbsp;</span>
+                <button type="button" style={s.btnFoto} onClick={() => fotoRef.current?.click()} disabled={lendoPlaca}>
+                  {lendoPlaca ? 'Lendo...' : 'Ler placa por foto'}
+                </button>
+                <input ref={fotoRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={aoSelecionarFoto} />
+              </div>
               <label style={s.field}>
                 <span style={s.fieldLabel}>Modelo *</span>
                 <input style={s.input} placeholder="Ex.: Fiat Uno" value={modelo} required
@@ -450,6 +519,7 @@ const s = {
   fieldLabel: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase' },
   input: { padding: '10px 12px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none', colorScheme: 'dark' },
   reconhecido: { position: 'absolute', left: '50%', bottom: 4, transform: 'translateX(-50%)', margin: 0, fontSize: 13, fontWeight: 600, color: LIME, whiteSpace: 'nowrap', pointerEvents: 'none', animation: 'reconhecidoIn 0.35s ease' },
+  btnFoto: { padding: '10px 14px', borderRadius: 4, border: `1px solid ${ORANGE}`, background: 'rgba(249,96,0,0.12)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' },
   button: { padding: '10px 18px', borderRadius: 4, border: 'none', backgroundColor: ORANGE, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' },
   saidaBtn: { padding: '6px 12px', borderRadius: 4, border: 'none', backgroundColor: ORANGE, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
   olhoBtn: { background: 'transparent', border: 'none', cursor: 'pointer', marginRight: 8, padding: 4, color: 'rgba(255,255,255,0.85)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', verticalAlign: 'middle' },
