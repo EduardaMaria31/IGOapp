@@ -10,6 +10,10 @@ const NAVY_DARK = '#000d47';
 const ORANGE = '#f96000';
 const LIME = '#a3e635';
 
+// Deixa a placa no padrão do banco: maiúsculas, sem espaços, traços ou símbolos
+function normalizarPlaca(s) {
+  return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
 // Mostra o tipo do veículo
 function tipoLabel(tv) {
   if (tv === 'moto') return 'Moto';
@@ -93,10 +97,21 @@ export default function Operacao() {
     setMsgTipo(tipo);
   }
 
+  // Procura, na lista já carregada, uma estadia em aberto para a placa
+  function estadiaEmAberto(p) {
+    return ativas.find((a) => a.veiculo?.placa === p);
+  }
+  function textoJaNoPatio(p, vaga) {
+    return `A placa ${p} já está no pátio (vaga ${vaga ?? '—'}). Registre a saída antes de uma nova entrada.`;
+  }
+
   // Autopreenche modelo/tipo/proprietário quando a placa já existe no banco
   async function buscarVeiculo() {
-    const p = placa.trim().toUpperCase();
+    const p = normalizarPlaca(placa);
     if (!p) { setPlacaConhecida(false); return; }
+    // Aviso antecipado: o veículo já está no pátio
+    const aberta = estadiaEmAberto(p);
+    if (aberta) aviso(textoJaNoPatio(p, aberta.vaga?.numero), 'erro');
     const { data } = await supabase
       .from('veiculo')
       .select('modelo, tipo_veiculo, proprietario_nome, proprietario_telefone')
@@ -161,11 +176,13 @@ export default function Operacao() {
         throw new Error(detalhe);
       }
       if (data?.error) throw new Error(data.error);
-      const p = (data?.placa || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const p = normalizarPlaca(data?.placa);
       if (!p) { aviso('Não consegui ler a placa na foto. Tente outra imagem ou digite manualmente.', 'erro'); return; }
       setPlaca(p);
       await autopreencherPorPlaca(p);
-      aviso(`Placa lida por foto: ${p}`, 'ok');
+      const aberta = estadiaEmAberto(p);
+      if (aberta) aviso(textoJaNoPatio(p, aberta.vaga?.numero), 'erro');
+      else aviso(`Placa lida por foto: ${p}`, 'ok');
     } catch (err) {
       aviso('Erro ao ler a placa: ' + (err?.message || err), 'erro');
     } finally {
@@ -189,11 +206,25 @@ export default function Operacao() {
     e.preventDefault();
     setMsg('');
     try {
-      const p = placa.trim().toUpperCase();
+      const p = normalizarPlaca(placa);
       if (!p || !vagaId) { aviso('Preencha a placa e escolha uma vaga.', 'erro'); return; }
 
       // 1) acha o veículo pela placa; se não existir, cria
       let { data: veic } = await supabase.from('veiculo').select('id').eq('placa', p).maybeSingle();
+
+      // 1b) validação: o mesmo veículo não pode ter duas entradas em aberto no pátio.
+      // (consulta direta ao banco, para pegar também entradas feitas por outro operador)
+      if (veic) {
+        const { data: aberta } = await supabase
+          .from('transacao')
+          .select('id, vaga:vaga_id ( numero )')
+          .eq('veiculo_id', veic.id)
+          .is('hora_saida', null)
+          .limit(1)
+          .maybeSingle();
+        if (aberta) { aviso(textoJaNoPatio(p, aberta.vaga?.numero), 'erro'); return; }
+      }
+
       if (!veic) {
         const { data: novo, error } = await supabase
           .from('veiculo')

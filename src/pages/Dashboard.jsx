@@ -58,6 +58,29 @@ function tempoDesde(ts) {
   return `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
+// ---- Pesquisa e filtros das tabelas ----
+// Tira acentos e maiúsculas, para "joao" achar "João" e "fiat" achar "FIAT UNO"
+function norm(s) {
+  return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+// Data (dd/mm/aaaa) no horário de Brasília — usada só na pesquisa
+function dataBR(ts) {
+  const d = paraData(ts);
+  return d ? d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '';
+}
+// Texto único onde a pesquisa procura (placa, modelo, tipo, dono, telefone, vaga, horários, datas, valor)
+function textoBusca(campos) {
+  return norm(campos.filter((c) => c !== null && c !== undefined && c !== '').join(' '));
+}
+// Todas as palavras digitadas precisam aparecer em algum campo; "tipo" filtra carro/moto
+function filtrarLista(lista, busca, tipo) {
+  const termos = norm(busca).split(/\s+/).filter(Boolean);
+  return lista.filter((it) => {
+    if (tipo !== 'todos' && it.tipo !== tipo) return false;
+    return termos.every((t) => it.busca.includes(t) || it.busca.includes(t.replace(/[-.]/g, '')));
+  });
+}
+
 // Controle de paginação (10 itens por página) para as tabelas.
 // Não aparece quando há 10 itens ou menos.
 function Paginacao({ total, pagina, setPagina }) {
@@ -95,6 +118,10 @@ export default function Dashboard() {
   const [historicoRecente, setHistoricoRecente] = useState([]);
   const [pagVeic, setPagVeic] = useState(1);   // paginação: veículos no pátio
   const [pagHist, setPagHist] = useState(1);   // paginação: histórico
+  const [buscaVeic, setBuscaVeic] = useState('');   // pesquisa: veículos no pátio
+  const [tipoVeic, setTipoVeic] = useState('todos'); // filtro de tipo: veículos no pátio
+  const [buscaHist, setBuscaHist] = useState('');   // pesquisa: histórico
+  const [tipoHist, setTipoHist] = useState('todos'); // filtro de tipo: histórico
   const [detalheVeic, setDetalheVeic] = useState(null); // cartão de detalhes do veículo
 
   // ===== Inteligência Artificial (dados reais do Supabase) =====
@@ -109,6 +136,12 @@ export default function Dashboard() {
   useEffect(() => {
     carregarDados();
   }, []);
+
+  // Listas já filtradas pela pesquisa e pelo tipo
+  const veicFiltrados = filtrarLista(veiculosEstacionados, buscaVeic, tipoVeic);
+  const histFiltrado = filtrarLista(historicoRecente, buscaHist, tipoHist);
+  const veicFiltrando = buscaVeic.trim() !== '' || tipoVeic !== 'todos';
+  const histFiltrando = buscaHist.trim() !== '' || tipoHist !== 'todos';
 
   async function carregarDados() {
     setCarregando(true);
@@ -160,6 +193,12 @@ export default function Dashboard() {
         vaga: t.vaga?.numero ?? '—',
         entrada: horaBR(t.hora_entrada),
         tempo: tempoDesde(t.hora_entrada),
+        busca: textoBusca([
+          t.veiculo?.placa, t.veiculo?.modelo, tipoLabel(t.veiculo?.tipo_veiculo),
+          t.veiculo?.proprietario_nome || 'Não informado',
+          t.veiculo?.proprietario_telefone, (t.veiculo?.proprietario_telefone || '').replace(/\D/g, ''),
+          t.vaga?.numero, horaBR(t.hora_entrada), dataBR(t.hora_entrada),
+        ]),
       })));
 
       // Histórico recente (transações finalizadas)
@@ -168,7 +207,7 @@ export default function Dashboard() {
         .select('id, hora_entrada, hora_saida, valor_calculado, veiculo:veiculo_id ( placa, modelo, tipo_veiculo, proprietario_nome, proprietario_telefone ), vaga:vaga_id ( numero )')
         .not('hora_saida', 'is', null)
         .order('hora_saida', { ascending: false })
-        .limit(200);
+        .limit(1000);
       setHistoricoRecente((hist ?? []).map((t) => ({
         id: t.id,
         placa: t.veiculo?.placa ?? '—',
@@ -180,6 +219,14 @@ export default function Dashboard() {
         entrada: horaBR(t.hora_entrada),
         saida: horaBR(t.hora_saida),
         valor: Number(t.valor_calculado || 0),
+        busca: textoBusca([
+          t.veiculo?.placa, t.veiculo?.modelo, tipoLabel(t.veiculo?.tipo_veiculo),
+          t.veiculo?.proprietario_nome || 'Não informado',
+          t.veiculo?.proprietario_telefone, (t.veiculo?.proprietario_telefone || '').replace(/\D/g, ''),
+          t.vaga?.numero, horaBR(t.hora_entrada), dataBR(t.hora_entrada),
+          horaBR(t.hora_saida), dataBR(t.hora_saida),
+          Number(t.valor_calculado || 0).toFixed(2), Number(t.valor_calculado || 0).toFixed(2).replace('.', ','),
+        ]),
       })));
 
     } catch (err) {
@@ -311,6 +358,32 @@ export default function Dashboard() {
             <span style={styles.bracketTopRight} />
             <div style={styles.tableCard}>
               <h2 style={styles.tableTitle}>Veículos Estacionados Agora</h2>
+              <div style={styles.filtroBarra}>
+                <input
+                  style={styles.buscaInput}
+                  type="search"
+                  value={buscaVeic}
+                  onChange={(e) => { setBuscaVeic(e.target.value); setPagVeic(1); }}
+                  placeholder="Pesquisar por placa, modelo, dono, telefone, vaga, data..."
+                  aria-label="Pesquisar veículos estacionados"
+                />
+                <select
+                  style={styles.buscaSelect}
+                  value={tipoVeic}
+                  onChange={(e) => { setTipoVeic(e.target.value); setPagVeic(1); }}
+                  aria-label="Filtrar por tipo de veículo"
+                >
+                  <option value="todos">Todos os tipos</option>
+                  <option value="carro">Carro</option>
+                  <option value="moto">Moto</option>
+                </select>
+              </div>
+              <div style={styles.contagemLinha}>
+                <span>{veicFiltrados.length} de {veiculosEstacionados.length} veículos</span>
+                {veicFiltrando && (
+                  <button style={styles.limparBtn} onClick={() => { setBuscaVeic(''); setTipoVeic('todos'); setPagVeic(1); }}>Limpar filtros</button>
+                )}
+              </div>
               <div style={styles.tableResponsive}>
                 <table style={styles.table}>
                   <thead>
@@ -325,7 +398,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {veiculosEstacionados.slice((pagVeic - 1) * 10, pagVeic * 10).map((item) => (
+                    {veicFiltrados.slice((pagVeic - 1) * 10, pagVeic * 10).map((item) => (
                       <tr key={item.id} style={styles.tr}>
                         <td style={styles.tdBold}>{item.placa}</td>
                         <td style={styles.td}>{item.modelo}</td>
@@ -338,13 +411,15 @@ export default function Dashboard() {
                         </td>
                       </tr>
                     ))}
-                    {veiculosEstacionados.length === 0 && (
-                      <tr><td style={styles.td} colSpan={7}>Nenhum veículo no pátio agora.</td></tr>
+                    {veicFiltrados.length === 0 && (
+                      <tr><td style={styles.td} colSpan={7}>
+                        {veiculosEstacionados.length === 0 ? 'Nenhum veículo no pátio agora.' : 'Nenhum veículo encontrado para essa pesquisa.'}
+                      </td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
-              <Paginacao total={veiculosEstacionados.length} pagina={pagVeic} setPagina={setPagVeic} />
+              <Paginacao total={veicFiltrados.length} pagina={pagVeic} setPagina={setPagVeic} />
             </div>
           </div>
 
@@ -353,6 +428,32 @@ export default function Dashboard() {
             <span style={styles.bracketBottomLeft} />
             <div style={styles.tableCard}>
               <h2 style={styles.tableTitle}>Histórico Recente</h2>
+              <div style={styles.filtroBarra}>
+                <input
+                  style={styles.buscaInput}
+                  type="search"
+                  value={buscaHist}
+                  onChange={(e) => { setBuscaHist(e.target.value); setPagHist(1); }}
+                  placeholder="Pesquisar por placa, modelo, dono, telefone, vaga, data..."
+                  aria-label="Pesquisar no histórico"
+                />
+                <select
+                  style={styles.buscaSelect}
+                  value={tipoHist}
+                  onChange={(e) => { setTipoHist(e.target.value); setPagHist(1); }}
+                  aria-label="Filtrar por tipo de veículo"
+                >
+                  <option value="todos">Todos os tipos</option>
+                  <option value="carro">Carro</option>
+                  <option value="moto">Moto</option>
+                </select>
+              </div>
+              <div style={styles.contagemLinha}>
+                <span>{histFiltrado.length} de {historicoRecente.length} registros</span>
+                {histFiltrando && (
+                  <button style={styles.limparBtn} onClick={() => { setBuscaHist(''); setTipoHist('todos'); setPagHist(1); }}>Limpar filtros</button>
+                )}
+              </div>
               <div style={styles.tableResponsive}>
                 <table style={styles.table}>
                   <thead>
@@ -367,7 +468,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {historicoRecente.slice((pagHist - 1) * 10, pagHist * 10).map((item) => (
+                    {histFiltrado.slice((pagHist - 1) * 10, pagHist * 10).map((item) => (
                       <tr key={item.id} style={styles.tr}>
                         <td style={styles.tdBold}>{item.placa}</td>
                         <td style={styles.td}>{tipoLabel(item.tipo)}</td>
@@ -380,13 +481,15 @@ export default function Dashboard() {
                         </td>
                       </tr>
                     ))}
-                    {historicoRecente.length === 0 && (
-                      <tr><td style={styles.td} colSpan={7}>Nenhuma saída registrada ainda.</td></tr>
+                    {histFiltrado.length === 0 && (
+                      <tr><td style={styles.td} colSpan={7}>
+                        {historicoRecente.length === 0 ? 'Nenhuma saída registrada ainda.' : 'Nenhum registro encontrado para essa pesquisa.'}
+                      </td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
-              <Paginacao total={historicoRecente.length} pagina={pagHist} setPagina={setPagHist} />
+              <Paginacao total={histFiltrado.length} pagina={pagHist} setPagina={setPagHist} />
             </div>
           </div>
         </section>
@@ -654,6 +757,31 @@ const styles = {
     gap: 16,
   },
   tableTitle: { fontSize: 18, fontWeight: 700, color: '#fff', margin: 0 },
+  filtroBarra: { display: 'flex', gap: 10, flexWrap: 'wrap' },
+  buscaInput: {
+    flex: '1 1 220px',
+    minWidth: 0,
+    padding: '9px 12px',
+    borderRadius: 4,
+    border: '1px solid rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    color: '#fff',
+    fontSize: 14,
+    outline: 'none',
+    colorScheme: 'dark',
+  },
+  buscaSelect: {
+    padding: '9px 12px',
+    borderRadius: 4,
+    border: '1px solid rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    color: '#fff',
+    fontSize: 14,
+    outline: 'none',
+    colorScheme: 'dark',
+  },
+  contagemLinha: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: -6 },
+  limparBtn: { background: 'transparent', border: 'none', color: ORANGE, cursor: 'pointer', fontSize: 12, fontWeight: 700, textDecoration: 'underline', padding: 0 },
   tableResponsive: { overflowX: 'auto' },
   table: { width: '100%', borderCollapse: 'collapse', textAlign: 'left' },
   th: {
