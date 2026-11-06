@@ -337,8 +337,8 @@ export default function Operacao() {
             <form onSubmit={registrarEntrada} style={s.formRow}>
               <label style={s.field}>
                 <span style={s.fieldLabel}>Placa *</span>
-                <input style={s.input} placeholder="Ex.: ABC1D23" value={placa} required
-                  onChange={(e) => { setPlaca(e.target.value); setPlacaConhecida(false); }}
+                <input style={s.input} placeholder="Ex.: ABC1D23" value={placa} required maxLength={7}
+                  onChange={(e) => { setPlaca(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 7)); setPlacaConhecida(false); }}
                   onBlur={buscarVeiculo} />
               </label>
               <div style={s.field}>
